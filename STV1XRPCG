@@ -1,0 +1,136 @@
+import requests
+import pandas as pd
+# XRP, Coin Gecko logic bot for trading. Can be adapted to other platforms, stocks, and cryptos. This provides a simulation using real time data to what one could achieve in 1 year.
+# It is scalable, your initial investment is what depends on your return (IE: 100,000 invested = 440,000 return; likewise 10,000 invested = 44,000 returned end of year)
+# Constants
+API_URL = "https://api.coingecko.com/api/v3/coins/markets"
+COIN_ID = "ripple"  # CoinGecko ID for XRP
+CURRENCY = "usd"  # Fetch data in USD
+DAYS = 360  # Number of days for historical data
+STARTING_BALANCE = 20000.0  # Starting capital in USD
+REINVESTMENT_RATE = 0.10  # Reinvest 10% of the reserve account
+CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence score to execute a trade
+FEES_PERCENTAGE = 0.4  # Fee percentage per trade
+FORCE_FINAL_SALE = True  # Enforce selling at the end of simulation
+MAX_LOSS_THRESHOLD = 0.05  # Max acceptable loss threshold for forced final sale (5%)
+
+# Set reinvestment threshold manually based on the initial investment
+def calculate_reinvestment_threshold(starting_balance):
+    if starting_balance == 10000:
+        return 15000
+    elif starting_balance == 100000:
+        return 150000
+    elif starting_balance == 100:
+        return 150
+    else:
+        return starting_balance * 1.5  # Default to 1.5x the initial investment
+
+# Fetch historical price data
+def fetch_historical_data(coin_id, currency, days):
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        params = {"vs_currency": currency, "days": days, "interval": "daily"}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        prices = [item[1] for item in data["prices"]]
+        return prices
+    except Exception as e:
+        print(f"Error fetching historical data: {e}")
+        return None
+
+# Calculate confidence score (basic logic for now)
+def calculate_confidence(prices):
+    last_price = prices[-1]
+    avg_price = sum(prices[-10:]) / len(prices[-10:]) if len(prices) >= 10 else sum(prices) / len(prices)
+    confidence = 1 - abs(last_price - avg_price) / avg_price
+    return max(0, min(1, confidence))  # Ensure confidence is between 0 and 1
+
+# Simulate trades
+def simulate_trades(prices, starting_balance):
+    reinvestment_threshold = calculate_reinvestment_threshold(starting_balance)
+    balance = starting_balance
+    reserve_account = 0
+    holdings = 0
+    average_buy_price = 0
+    trade_log = []
+
+    for i, price in enumerate(prices[:-1]):
+        confidence = calculate_confidence(prices[:i + 1])
+
+        # Reinvestment Logic
+        if reserve_account > reinvestment_threshold:
+            reinvestment = reserve_account * REINVESTMENT_RATE
+            balance += reinvestment
+            reserve_account -= reinvestment
+            trade_log.append(f"Reinvested ${reinvestment:.2f} from reserve. New Active Balance: ${balance:.2f}, Reserve Account: ${reserve_account:.2f}")
+
+        # Buy logic
+        if confidence >= CONFIDENCE_THRESHOLD and balance > 0:
+            buy_amount = balance / price * ((100 - FEES_PERCENTAGE) / 100)
+            holdings += buy_amount
+            average_buy_price = (average_buy_price * (holdings - buy_amount) + price * buy_amount) / holdings
+            balance = 0
+            trade_log.append(f"BUY executed at ${price:.2f}, Amount: {buy_amount:.4f}, Average Buy Price: ${average_buy_price:.2f}, Balance: ${balance:.2f}")
+
+        # Sell logic
+        elif confidence < CONFIDENCE_THRESHOLD and holdings > 0:
+            sell_amount = holdings * price * ((100 - FEES_PERCENTAGE) / 100)
+            profit_loss = sell_amount - (average_buy_price * holdings)
+            balance += sell_amount
+            if profit_loss > 0:
+                reserve_account += profit_loss
+            else:
+                balance += profit_loss  # Deduct loss from active balance
+            holdings = 0
+            average_buy_price = 0
+            trade_log.append(f"SELL executed at ${price:.2f}, Profit/Loss: ${profit_loss:.2f}, Active Balance: ${balance:.2f}, Reserve Account: ${reserve_account:.2f}")
+
+    # Final sale logic
+    final_price = prices[-1]
+    if holdings > 0:
+        final_sale_allowed = (
+            FORCE_FINAL_SALE
+            or final_price >= average_buy_price
+            or (average_buy_price - final_price) / average_buy_price <= MAX_LOSS_THRESHOLD
+        )
+        if final_sale_allowed:
+            final_sale_amount = holdings * final_price * ((100 - FEES_PERCENTAGE) / 100)
+            profit_loss = final_sale_amount - (average_buy_price * holdings)
+            balance += final_sale_amount * 0.80  # Allocate 80% of final sale profits to active balance
+            reserve_account += final_sale_amount * 0.20  # Allocate 20% of final sale profits to reserve account
+            if profit_loss < 0:
+                balance += profit_loss  # Deduct loss from active balance
+            trade_log.append(f"Final SELL executed at ${final_price:.2f}, Profit/Loss: ${profit_loss:.2f}, Active Balance: ${balance:.2f}, Reserve Account: ${reserve_account:.2f}")
+            holdings = 0
+        else:
+            current_value = holdings * final_price
+            trade_log.append(f"Holding final holdings of {holdings:.4f} units. Current value: ${current_value:.2f} "
+                             f"(Below acceptable sell price of ${average_buy_price:.2f})")
+
+    return balance, reserve_account, trade_log
+
+# Main function
+def main():
+    print("Fetching historical data for XRP...")
+    prices = fetch_historical_data(COIN_ID, CURRENCY, DAYS)
+    if not prices:
+        print("Failed to fetch historical data. Exiting.")
+        return
+
+    print(f"Loaded {len(prices)} price points for trading XRP.")
+    print("Starting simulation for XRP...")
+    final_balance, reserve_account, trade_log = simulate_trades(prices, STARTING_BALANCE)
+
+    # Save trade log to CSV
+    trade_log_file = "trade_log_xrp.csv"
+    pd.DataFrame({"Log": trade_log}).to_csv(trade_log_file, index=False)
+    print(f"Trade log saved to {trade_log_file}")
+
+    print(f"Final Active Balance: ${final_balance:.2f}")
+    print(f"Reserve Account: ${reserve_account:.2f}")
+    print("Simulation complete.")
+
+if __name__ == "__main__":
+    main()
+# Created by Tim Douglas, Founder of Galaticore Securities Inc. 2025
